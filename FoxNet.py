@@ -115,25 +115,31 @@ class FoxNet(nn.Module):
         return x
 
 
-def train_fox(foxnet, epochs):
+def train_fox(foxnet, epochs, cuda_available):
 
     criterion = nn.CrossEntropyLoss()
-    optimizer = optim.SGD(foxnet.parameters(), lr=0.001, momentum=0.9)
+    optimizer = optim.SGD(foxnet.parameters(), lr=0.01, momentum=0.9)
 
     trainset = Places("data/images/", "ground_truth/train.txt", transform=transforms.ToTensor())
     trainloader = torch.utils.data.DataLoader(trainset, batch_size=4,
                                               shuffle=True, num_workers=2)
 
     valset = Places("data/images/", "ground_truth/val.txt")
-    valloader = torch.utils.data;set.DataLoader(valset, batch_size=4,
+    valloader = torch.utils.data.DataLoader(valset, batch_size=4,
                                             shuffle=True, num_workers=2)
 
-    for _ in range(epochs):
+    for epoch in range(epochs):
+
+        running_loss = 0
 
         for i, data in enumerate(trainloader, 0):
 
             input_images, labels = data
-            input_images, labels = Variable(input_images), Variable(labels)
+
+            if cuda_available:
+                input_images, labels = Variable(input_images.cuda()), Variable(labels.cuda())
+            else:
+                input_images, labels = Variable(input_images), Variable(labels)
 
             optimizer.zero_grad()
 
@@ -141,7 +147,13 @@ def train_fox(foxnet, epochs):
             loss = criterion(outputs, labels)
             loss.backward()
 
-            print(loss.data[0])
+            running_loss += loss.data[0]
+
+            # Print stats every 1000
+            if i % 1000 == 999:
+                print('[%d, %5d] loss: %.3f' %
+                      (epoch + 1, i + 1, running_loss / 1000))
+                running_loss = 0.0
 
             optimizer.step()
 
@@ -154,6 +166,13 @@ def evaluate_foxnet(foxnet, epochs):
 if __name__ == '__main__':
 
     parameters = load_parameters("parameters.ini")
-    foxnet = FoxNet()
 
-    train_fox(foxnet, 10)
+    fox = FoxNet()
+
+    use_cuda = torch.cuda.is_available()
+
+    if use_cuda:
+        print("Using CUDA")
+        fox.cuda()
+
+    train_fox(fox, 10, use_cuda)
