@@ -9,6 +9,7 @@ import torchvision.transforms as transforms
 import os
 from skimage import io
 import configparser
+import time
 import ipdb
 
 # TODO
@@ -131,6 +132,9 @@ def find_top_5_error(true_labels, predictions):
     num_correct = 0
     num_incorrect = 0
 
+    true_labels = true_labels.cpu()
+    predictions = predictions.cpu()
+
     true_labels = true_labels.data.numpy()
     predictions = list(predictions.data.numpy())
 
@@ -152,7 +156,7 @@ def train_fox(foxnet, epochs, cuda_available):
     optimizer = optim.SGD(foxnet.parameters(), lr=0.01, momentum=0.9)
 
     trainset = Places("data/images/", "ground_truth/train.txt", transform=transforms.ToTensor())
-    trainloader = torch.utils.data.DataLoader(trainset, batch_size=4,
+    trainloader = torch.utils.data.DataLoader(trainset, batch_size=32,
                                               shuffle=True, num_workers=2)
 
     valset = Places("data/images/", "ground_truth/val.txt", transform=transforms.ToTensor())
@@ -160,11 +164,14 @@ def train_fox(foxnet, epochs, cuda_available):
                                             shuffle=False, num_workers=2)
 
     best_validation_acc = 0
-    best_model_wts = foxnet.state_dict()
+    best_model_wts = None
 
     for epoch in range(epochs):
 
         running_loss = 0
+
+        train_top5_right = 0
+        train_top5_wrong = 0
 
         # Set model weights to be trainable during training
         foxnet.train(True)
@@ -183,15 +190,24 @@ def train_fox(foxnet, epochs, cuda_available):
             loss = criterion(outputs, labels)
             loss.backward()
 
+            # Keep track of training score
+            _, top_5_indices = torch.topk(outputs, 5)
+            num_correct, num_incorrect = find_top_5_error(labels, top_5_indices)
+            train_top5_right += num_correct
+            train_top5_wrong += num_incorrect
+
             running_loss += loss.data[0]
 
             # Print stats every 1000
             if i % 1000 == 999:
-                print('[%d, %5d] loss: %.3f' %
+                print('[%d, %5d] average loss: %.3f' %
                       (epoch + 1, i + 1, running_loss / 1000))
                 running_loss = 0.0
 
             optimizer.step()
+
+        training_acc = train_top5_right / (train_top5_right+train_top5_wrong)
+        print("Epoch {e}: Training Accuracy: {acc}".format(e=epoch + 1, acc=training_acc))
 
         # Set model weights to be untrainable during validation
         foxnet.train(False)
@@ -201,7 +217,7 @@ def train_fox(foxnet, epochs, cuda_available):
 
         for i, val_data in enumerate(valloader):
 
-            print(i)
+            # print(i)
 
             input_images, labels = val_data
 
@@ -244,7 +260,7 @@ def evaluate_foxnet(foxnet, cuda_available):
         input_images, labels = test_data
 
         if cuda_available:
-            input_images = Variable(input_images.cuda())gi
+            input_images = Variable(input_images.cuda())
         else:
             input_images = Variable(input_images)
 
@@ -252,7 +268,7 @@ def evaluate_foxnet(foxnet, cuda_available):
 
         _, top_5_indices = torch.topk(output, 5)
 
-        predictions.extend(list(top_5_indices.data.numpy()))
+        predictions.extend(list(top_5_indices.cpu().data.numpy()))
 
     # Write the output to submission file format
     image_paths = []
@@ -280,5 +296,11 @@ if __name__ == '__main__':
         print("Using CUDA")
         fox.cuda()
 
-    # train_fox(fox, 10, use_cuda)
-    evaluate_foxnet(fox, use_cuda)
+    start = time.time()
+    epochs = 250
+
+    train_fox(fox, epochs, use_cuda)
+    # evaluate_foxnet(fox, use_cuda)
+
+    end = time.time()
+    print(end-start, "seconds")
