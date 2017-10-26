@@ -60,6 +60,11 @@ class Places(Dataset):
                 self.image_path_list.append(os.path.join(self.data_root_path, image_path))
                 self.labels_list.append(int(label))
 
+                # if label is None:
+                #     self.labels_list.append(-1)  # Test set doesn't have labels
+                # else:
+                #     self.labels_list.append(int(label))
+
     def __len__(self):
         return len(self.image_path_list)
 
@@ -115,6 +120,32 @@ class FoxNet(nn.Module):
         return x
 
 
+def find_top_5_error(true_labels, predictions):
+    """
+    For each index, see if the true label is in the 5 predictions for the corresponding index
+    :param true_labels: PyTorch Tensor Variable, batch_size 1
+    :param predictions: PyTorch Tensor Variable, batch size by 5
+    :return:
+    """
+
+    num_correct = 0
+    num_incorrect = 0
+
+    true_labels = true_labels.data.numpy()
+    predictions = list(predictions.data.numpy())
+
+    for i, label in enumerate(true_labels):
+
+        top_5_predictions = predictions[i]
+
+        if label in top_5_predictions:
+            num_correct += 1
+        else:
+            num_incorrect += 1
+
+    return num_correct, num_incorrect
+
+
 def train_fox(foxnet, epochs, cuda_available):
 
     criterion = nn.CrossEntropyLoss()
@@ -124,14 +155,19 @@ def train_fox(foxnet, epochs, cuda_available):
     trainloader = torch.utils.data.DataLoader(trainset, batch_size=4,
                                               shuffle=True, num_workers=2)
 
-    valset = Places("data/images/", "ground_truth/val.txt")
-    valloader = torch.utils.data.DataLoader(valset, batch_size=4,
-                                            shuffle=True, num_workers=2)
+    valset = Places("data/images/", "ground_truth/val.txt", transform=transforms.ToTensor())
+    valloader = torch.utils.data.DataLoader(valset, batch_size=500,
+                                            shuffle=False, num_workers=2)
+
+    best_validation_acc = 0
+    best_model_wts = foxnet.state_dict()
 
     for epoch in range(epochs):
 
         running_loss = 0
 
+        # Set model weights to be trainable during training
+        foxnet.train(True)
         for i, data in enumerate(trainloader, 0):
 
             input_images, labels = data
@@ -157,10 +193,79 @@ def train_fox(foxnet, epochs, cuda_available):
 
             optimizer.step()
 
+        # Set model weights to be untrainable during validation
+        foxnet.train(False)
+        # Calculate validation accuracy after each epoch
+        val_top5_right = 0
+        val_top5_wrong = 0
 
-def evaluate_foxnet(foxnet, epochs):
+        for i, val_data in enumerate(valloader):
 
-    pass
+            print(i)
+
+            input_images, labels = val_data
+
+            if cuda_available:
+                input_images, labels = Variable(input_images.cuda()), Variable(labels.cuda())
+            else:
+                input_images, labels = Variable(input_images), Variable(labels)
+
+            output = foxnet(input_images)
+
+            _, top_5_indices = torch.topk(output, 5)
+
+            num_correct, num_incorrect = find_top_5_error(labels, top_5_indices)
+
+            val_top5_right += num_correct
+            val_top5_wrong += num_incorrect
+
+        validation_acc = val_top5_right/(val_top5_right+val_top5_wrong)
+
+        print("Epoch {e}: Validation Accuracy: {acc}".format(e=epoch+1, acc=validation_acc))
+
+        if validation_acc > best_validation_acc:
+            best_validation_acc = validation_acc
+            best_model_wts = foxnet.state_dict()
+
+            torch.save(best_model_wts, "current_best_model_weights")
+
+
+def evaluate_foxnet(foxnet, cuda_available):
+
+    testset = Places("data/images/", "ground_truth/test.txt", transform=transforms.ToTensor())
+    testloader = torch.utils.data.DataLoader(testset, batch_size=100,
+                                             shuffle=False, num_workers=2)
+
+    predictions = []
+
+    for i, test_data in enumerate(testloader):
+
+        print(i)
+        input_images, labels = test_data
+
+        if cuda_available:
+            input_images = Variable(input_images.cuda())gi
+        else:
+            input_images = Variable(input_images)
+
+        output = foxnet(input_images)
+
+        _, top_5_indices = torch.topk(output, 5)
+
+        predictions.extend(list(top_5_indices.data.numpy()))
+
+    # Write the output to submission file format
+    image_paths = []
+    with open("ground_truth/test.txt", "r") as f:
+        for line in f:
+            image_path, _ = line.rstrip().split(" ")
+            image_paths.append(image_path)
+
+    with open("submission_file.txt", "w") as f:
+        for image_path, top_5_prediction in zip(image_paths, predictions):
+
+            f.write(image_path + " " + " ".join(map(str,top_5_prediction)))
+            f.write("\n")
 
 
 if __name__ == '__main__':
@@ -175,4 +280,5 @@ if __name__ == '__main__':
         print("Using CUDA")
         fox.cuda()
 
-    train_fox(fox, 10, use_cuda)
+    # train_fox(fox, 10, use_cuda)
+    evaluate_foxnet(fox, use_cuda)
