@@ -4,10 +4,10 @@ from torch.autograd import Variable
 from torch.utils.data import Dataset
 import torch.optim as optim
 import torchvision
-import torchvision.transforms as transforms
+from torchvision.transforms import *
 
 import os
-from skimage import io
+from PIL import Image
 import configparser
 import time
 import ipdb
@@ -16,7 +16,8 @@ import ipdb
 # 1. figure out to load dataset and use dataloader
 # 2. data augmentation
 # 3. Keep Track/Save the model that has highest  validation set score (somewhere on pytorch tutorials)
-# 4. Model evaluation on test set and printing of output that you can send
+# 4. Learning rate scheduler
+# 5. Image normalization
 
 
 def load_parameters(parameters_filepath):
@@ -72,7 +73,8 @@ class Places(Dataset):
     def __getitem__(self, idx):
 
         image_path = self.image_path_list[idx]
-        image = io.imread(image_path)
+        # image = io.imread(image_path)  # Using skimage
+        image = Image.open(image_path)  # Using PIL
         label = self.labels_list[idx]
 
         if self.transform:
@@ -80,12 +82,22 @@ class Places(Dataset):
 
         return image, label
 
+        # sample = {'image': image, 'label': label}
+        #
+        # if self.transform:
+        #     image = self.transform(sample)
+        #
+        #
+        # return sample['image'], sample['label']
+
 
 class FoxNet(nn.Module):
 
     def __init__(self, num_classes=100):
 
         super(FoxNet, self).__init__()
+
+        self.classifier_input_size = None
 
         self.features = nn.Sequential(
             nn.Conv2d(3, 64, kernel_size=11, stride=4, padding=2),
@@ -105,7 +117,7 @@ class FoxNet(nn.Module):
 
         self.classifier = nn.Sequential(
             nn.Dropout(),
-            nn.Linear(256 * 3 * 3, 4096),
+            nn.Linear(256 * 2 * 2, 4096),
             nn.ReLU(inplace=True),
             nn.Dropout(),
             nn.Linear(4096, 4096),
@@ -116,7 +128,8 @@ class FoxNet(nn.Module):
     def forward(self, x):
 
         x = self.features(x)
-        x = x.view(x.size(0), 256 * 3 * 3)  # Reshape, originally was 256*6*6, bug?
+        # 256*3*3 for 128 by 128, 256*2*@ for 112 by 112, must change when cropping
+        x = x.view(x.size(0), 256 * 2 * 2)  # Reshape, originally was 256*6*6, bug?
         x = self.classifier(x)
         return x
 
@@ -152,16 +165,37 @@ def find_top_5_error(true_labels, predictions):
 
 def train_fox(foxnet, epochs, cuda_available):
 
+    channel_mean = torch.Tensor([.4543, .4362, .4047])
+    # channel_std = torch.Tensor([.2274, .2244, .2336])
+    channel_std = torch.ones(3)
+
+    train_data_transform = Compose([
+        RandomCrop(112),
+        RandomHorizontalFlip(),
+        ToTensor(),
+        Normalize(channel_mean, channel_std)
+    ])
+
+    val_data_transform = Compose([
+        TenCrop(112),  # Crops PIL image into four corners, central crop, and flipped version
+        Lambda(lambda crops: torch.stack([ToTensor()(crop) for crop in crops])),
+        Lambda(lambda crops: torch.stack([Normalize(channel_mean, channel_std)(crop) for crop in crops]))
+    ])
+
     criterion = nn.CrossEntropyLoss()
     optimizer = optim.SGD(foxnet.parameters(), lr=0.01, momentum=0.9)
 
-    trainset = Places("data/images/", "ground_truth/train.txt", transform=transforms.ToTensor())
-    trainloader = torch.utils.data.DataLoader(trainset, batch_size=32,
-                                              shuffle=True, num_workers=2)
+    # optimizer = optim.Adam(foxnet.parameters(), lr=0.1, betas=(0.9, 0.999), eps=1e-08, weight_decay=0)
 
-    valset = Places("data/images/", "ground_truth/val.txt", transform=transforms.ToTensor())
-    valloader = torch.utils.data.DataLoader(valset, batch_size=500,
-                                            shuffle=False, num_workers=2)
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, verbose=True)
+
+    trainset = Places("data/images/", "ground_truth/train.txt", transform=train_data_transform)
+    trainloader = torch.utils.data.DataLoader(trainset, batch_size=32,
+                                              shuffle=True, num_workers=4)
+
+    valset = Places("data/images/", "ground_truth/val.txt", transform=val_data_transform)
+    valloader = torch.utils.data.DataLoader(valset, batch_size=20,
+                                            shuffle=False, num_workers=8)
 
     best_validation_acc = 0
     best_model_wts = None
@@ -172,6 +206,7 @@ def train_fox(foxnet, epochs, cuda_available):
 
         train_top5_right = 0
         train_top5_wrong = 0
+
 
         # Set model weights to be trainable during training
         foxnet.train(True)
@@ -190,36 +225,47 @@ def train_fox(foxnet, epochs, cuda_available):
             loss = criterion(outputs, labels)
             loss.backward()
 
+            running_loss += loss.data[0]
+            optimizer.step()
+
             # Keep track of training score
             _, top_5_indices = torch.topk(outputs, 5)
             num_correct, num_incorrect = find_top_5_error(labels, top_5_indices)
             train_top5_right += num_correct
             train_top5_wrong += num_incorrect
 
-            running_loss += loss.data[0]
-
             # Print stats every 1000
-            if i % 1000 == 999:
+            if i % 500 == 499:
                 print('[%d, %5d] average loss: %.3f' %
-                      (epoch + 1, i + 1, running_loss / 1000))
+                      (epoch + 1, i + 1, running_loss / 500))
                 running_loss = 0.0
-
-            optimizer.step()
 
         training_acc = train_top5_right / (train_top5_right+train_top5_wrong)
         print("Epoch {e}: Training Accuracy: {acc}".format(e=epoch + 1, acc=training_acc))
 
         # Set model weights to be untrainable during validation
-        foxnet.train(False)
+        # foxnet.train(False)
+
         # Calculate validation accuracy after each epoch
         val_top5_right = 0
         val_top5_wrong = 0
 
+        validation_loss = 0
+
+        # Make prediction for validation set and test set by taking a 10 crop, and taking top 5 from the sum of the 10
+        # Takes about 2 minutes to run, kind of slow
         for i, val_data in enumerate(valloader):
 
-            # print(i)
+            # Send all the 10 crops through in a batch
 
             input_images, labels = val_data
+
+            # # Single image batch method
+            # Remove the redundant batch_size dimension if one at a time
+            # input_images = torch.squeeze(input_images)
+
+            # Multiple val batch
+            input_images = input_images.view(200, 3, 112, 112)  # First dimension is batch_size * 10
 
             if cuda_available:
                 input_images, labels = Variable(input_images.cuda()), Variable(labels.cuda())
@@ -228,8 +274,28 @@ def train_fox(foxnet, epochs, cuda_available):
 
             output = foxnet(input_images)
 
-            _, top_5_indices = torch.topk(output, 5)
+            # Single image batch method
+            # combined_output = torch.sum(output, dim=0)
+            # combined_output_for_loss = combined_output.view(1, 100)
+            # loss = criterion(combined_output_for_loss, labels)
 
+            # Multiple val batch
+            output = output.view(20, 10, 100)  # Each index into first dimension is a single one of the 10 predictions
+            combined_output = torch.sum(output, dim=1)  # Average the 10 predictions
+
+            loss = criterion(combined_output, labels)
+
+            validation_loss += loss.data[0]
+
+            _, top_5_indices = torch.topk(combined_output, 5)
+
+            # Single image batch method
+            # if labels.data[0] in top_5_indices.data:
+            #     val_top5_right += 1
+            # else:
+            #     val_top5_wrong += 1
+
+            # Multiple val batch
             num_correct, num_incorrect = find_top_5_error(labels, top_5_indices)
 
             val_top5_right += num_correct
@@ -238,6 +304,7 @@ def train_fox(foxnet, epochs, cuda_available):
         validation_acc = val_top5_right/(val_top5_right+val_top5_wrong)
 
         print("Epoch {e}: Validation Accuracy: {acc}".format(e=epoch+1, acc=validation_acc))
+        print("Epoch {e}: Validation Loss: {loss}".format(e=epoch+1, loss=validation_loss))
 
         if validation_acc > best_validation_acc:
             best_validation_acc = validation_acc
@@ -245,12 +312,25 @@ def train_fox(foxnet, epochs, cuda_available):
 
             torch.save(best_model_wts, "current_best_model_weights")
 
+        #Adjust the learning rate when the validation loss plateaus
+        scheduler.step(validation_loss)
+
 
 def evaluate_foxnet(foxnet, cuda_available):
 
-    testset = Places("data/images/", "ground_truth/test.txt", transform=transforms.ToTensor())
-    testloader = torch.utils.data.DataLoader(testset, batch_size=100,
-                                             shuffle=False, num_workers=2)
+    channel_mean = torch.Tensor([.4543, .4362, .4047])
+    # channel_std = torch.Tensor([.2274, .2244, .2336])
+    channel_std = torch.ones(3)
+
+    test_data_transform = Compose([
+        TenCrop(112),
+        Lambda(lambda crops: torch.stack([ToTensor()(crop) for crop in crops])),
+        Lambda(lambda crops: torch.stack([Normalize(channel_mean, channel_std)(crop) for crop in crops]))
+    ])
+
+    testset = Places("data/images/", "ground_truth/test.txt", transform=test_data_transform)
+    testloader = torch.utils.data.DataLoader(testset, batch_size=1,
+                                             shuffle=False, num_workers=8)
 
     predictions = []
 
@@ -259,14 +339,18 @@ def evaluate_foxnet(foxnet, cuda_available):
         print(i)
         input_images, labels = test_data
 
+        # Remove the redundant batch_size dimension
+        input_images = torch.squeeze(input_images)
+
         if cuda_available:
             input_images = Variable(input_images.cuda())
         else:
             input_images = Variable(input_images)
 
         output = foxnet(input_images)
+        combined_output = torch.sum(output, dim=0)
 
-        _, top_5_indices = torch.topk(output, 5)
+        _, top_5_indices = torch.topk(combined_output, 5)
 
         predictions.extend(list(top_5_indices.cpu().data.numpy()))
 
@@ -280,7 +364,7 @@ def evaluate_foxnet(foxnet, cuda_available):
     with open("submission_file.txt", "w") as f:
         for image_path, top_5_prediction in zip(image_paths, predictions):
 
-            f.write(image_path + " " + " ".join(map(str,top_5_prediction)))
+            f.write(image_path + " " + " ".join(map(str, top_5_prediction)))
             f.write("\n")
 
 
