@@ -194,7 +194,7 @@ def train_fox(foxnet, epochs, cuda_available):
                                               shuffle=True, num_workers=4)
 
     valset = Places("data/images/", "ground_truth/val.txt", transform=val_data_transform)
-    valloader = torch.utils.data.DataLoader(valset, batch_size=20,
+    valloader = torch.utils.data.DataLoader(valset, batch_size=10,
                                             shuffle=False, num_workers=8)
 
     best_validation_acc = 0
@@ -265,7 +265,7 @@ def train_fox(foxnet, epochs, cuda_available):
             # input_images = torch.squeeze(input_images)
 
             # Multiple val batch
-            input_images = input_images.view(200, 3, 112, 112)  # First dimension is batch_size * 10
+            input_images = input_images.view(100, 3, 112, 112)  # First dimension is batch_size * 10
 
             if cuda_available:
                 input_images, labels = Variable(input_images.cuda()), Variable(labels.cuda())
@@ -280,7 +280,7 @@ def train_fox(foxnet, epochs, cuda_available):
             # loss = criterion(combined_output_for_loss, labels)
 
             # Multiple val batch
-            output = output.view(20, 10, 100)  # Each index into first dimension is a single one of the 10 predictions
+            output = output.view(10, 10, 100)  # Each index into first dimension is a single one of the 10 predictions
             combined_output = torch.sum(output, dim=1)  # Average the 10 predictions
 
             loss = criterion(combined_output, labels)
@@ -373,6 +373,9 @@ if __name__ == '__main__':
     parameters = load_parameters("parameters.ini")
 
     fox = FoxNet()
+
+    # If loading
+    # fox.load_state_dict(torch.load("current_best_model_weights"))
 
     use_cuda = torch.cuda.is_available()
 
