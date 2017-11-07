@@ -5,12 +5,15 @@ from torch.utils.data import Dataset
 import torch.optim as optim
 import torchvision
 from torchvision.transforms import *
+import numpy as np
 
 import os
 from PIL import Image
 import configparser
 import time
 import ipdb
+
+from wideresnet import WideResNet
 
 # TODO
 # 1. figure out to load dataset and use dataloader
@@ -41,6 +44,39 @@ def load_parameters(parameters_filepath):
 #         return {'image': torch.from_numpy(image),
 #                 'landmarks': torch.from_numpy(landmarks)}
 
+
+class ColorAugmentation(object):
+    """Performs color channel augmentation on the images"""
+
+    def __init__(self):
+
+        self.eigenvalues = np.matrix([.19678, .01644, .00278])
+
+        self.eig_vec_one = np.matrix('-.5559; -.5809; -.5945')
+        self.eig_vec_two = np.matrix('-.7236; -.0138; -.69')
+        self.eig_vec_three = np.matrix('.409; -.8138; 0.412')
+
+    def __call__(self, image):
+
+
+        # Generate set of alpha for each image
+        alpha_one = np.random.normal(loc=0.0, scale=0.1)
+        alpha_two = np.random.normal(loc=0.0, scale=0.1)
+        alpha_three = np.random.normal(loc=0.0, scale=0.1)
+
+        combined = np.concatenate((alpha_one*self.eig_vec_one,
+                                   alpha_two*self.eig_vec_two,
+                                   alpha_three*self.eig_vec_three), axis=1)
+
+        addition = self.eigenvalues*combined
+
+        # Tile the addition so we can add it to the image
+        addition = torch.Tensor(addition)
+        addition = addition.view(3, 1, 1)
+        addition = addition.repeat(1, 128, 128)
+
+        modified_image = image + addition
+        return modified_image
 
 class Places(Dataset):
 
@@ -173,7 +209,8 @@ def train_fox(foxnet, epochs, cuda_available):
         RandomCrop(112),
         RandomHorizontalFlip(),
         ToTensor(),
-        Normalize(channel_mean, channel_std)
+        Normalize(channel_mean, channel_std),
+        ColorAugmentation()
     ])
 
     val_data_transform = Compose([
@@ -187,7 +224,7 @@ def train_fox(foxnet, epochs, cuda_available):
 
     # optimizer = optim.Adam(foxnet.parameters(), lr=0.1, betas=(0.9, 0.999), eps=1e-08, weight_decay=0)
 
-    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, verbose=True)
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='max', factor=0.25, verbose=True)
 
     trainset = Places("data/images/", "ground_truth/train.txt", transform=train_data_transform)
     trainloader = torch.utils.data.DataLoader(trainset, batch_size=32,
@@ -312,8 +349,8 @@ def train_fox(foxnet, epochs, cuda_available):
 
             torch.save(best_model_wts, "current_best_model_weights")
 
-        #Adjust the learning rate when the validation loss plateaus
-        scheduler.step(validation_loss)
+        #Adjust the learning rate when the validation loss or accuracy plateaus
+        scheduler.step(validation_acc)
 
 
 def evaluate_foxnet(foxnet, cuda_available):
@@ -336,7 +373,11 @@ def evaluate_foxnet(foxnet, cuda_available):
 
     for i, test_data in enumerate(testloader):
 
-        print(i)
+        # ipdb.set_trace()
+
+        if i % 100 == 0:
+            print(i)
+
         input_images, labels = test_data
 
         # Remove the redundant batch_size dimension
@@ -352,7 +393,7 @@ def evaluate_foxnet(foxnet, cuda_available):
 
         _, top_5_indices = torch.topk(combined_output, 5)
 
-        predictions.extend(list(top_5_indices.cpu().data.numpy()))
+        predictions.append(list(top_5_indices.cpu().data.numpy()))
 
     # Write the output to submission file format
     image_paths = []
@@ -373,6 +414,7 @@ if __name__ == '__main__':
     parameters = load_parameters("parameters.ini")
 
     fox = FoxNet()
+    # fox = WideResNet(depth=40, num_classes=100, widen_factor=4, dropRate=0)
 
     # If loading
     # fox.load_state_dict(torch.load("current_best_model_weights"))
