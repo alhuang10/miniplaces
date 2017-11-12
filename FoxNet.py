@@ -202,8 +202,9 @@ def find_top_5_error(true_labels, predictions):
 
 def train_fox(foxnet, epochs, cuda_available):
 
-    training_batch_size = 16
-    validation_batch_size = 1
+    # 16 limit for 28 layer - 10 wide network seems like
+    training_batch_size = 32
+    validation_batch_size = 2
 
     channel_mean = torch.Tensor([.4543, .4362, .4047])
     # channel_std = torch.Tensor([.2274, .2244, .2336])
@@ -249,6 +250,9 @@ def train_fox(foxnet, epochs, cuda_available):
 
     print("Beginning Training")
 
+    training_accuracies = []
+    validation_accuracies = []
+
     for epoch in range(epochs):
 
         running_loss = 0
@@ -256,14 +260,17 @@ def train_fox(foxnet, epochs, cuda_available):
         train_top5_right = 0
         train_top5_wrong = 0
 
+        current_time = time.time()
 
         # Set model weights to be trainable during training
-        # Start of training code
+        ### Start of training code
         foxnet.train(True)
         for i, data in enumerate(trainloader, 0):
 
             if i % 10 == 0:
-                print("Training:", i)
+                time_to_run = time.time() - current_time
+                current_time = time.time()
+                print("Training:", i, time_to_run)
 
             input_images, labels = data
 
@@ -294,11 +301,13 @@ def train_fox(foxnet, epochs, cuda_available):
                 running_loss = 0.0
 
         training_acc = train_top5_right / (train_top5_right+train_top5_wrong)
+        training_accuracies.append(training_acc)
         print("Epoch {e}: Training Accuracy: {acc}".format(e=epoch + 1, acc=training_acc))
-        # End of training code
+        print("Training accuracies so far:", training_accuracies)
+        ## End of training code
 
 
-        # Start of training on the validation set
+        ### Start of training on the validation set
         # for i, data in enumerate(valtrainloader, 0):
         #
         #     input_images, labels = data
@@ -316,7 +325,7 @@ def train_fox(foxnet, epochs, cuda_available):
         #
         #     running_loss += loss.data[0]
         #     optimizer.step()
-        # End of training validation set
+        ### End of training validation set
 
 
 
@@ -334,10 +343,8 @@ def train_fox(foxnet, epochs, cuda_available):
         # Takes about 2 minutes to run, kind of slow
         for i, val_data in enumerate(valloader):
 
-            if i % 10 == 0:
+            if i % 100 == 0:
                 print("Validation:", i)
-
-            # Send all the 10 crops through in a batch
 
             input_images, labels = val_data
 
@@ -383,9 +390,11 @@ def train_fox(foxnet, epochs, cuda_available):
             val_top5_wrong += num_incorrect
 
         validation_acc = val_top5_right/(val_top5_right+val_top5_wrong)
-
+        validation_accuracies.append(validation_acc)
         print("Epoch {e}: Validation Accuracy: {acc}".format(e=epoch+1, acc=validation_acc))
         print("Epoch {e}: Validation Loss: {loss}".format(e=epoch+1, loss=validation_loss))
+        print("Validation accuracies so far:", validation_accuracies)
+
 
         if validation_acc > best_validation_acc:
             best_validation_acc = validation_acc
@@ -395,6 +404,9 @@ def train_fox(foxnet, epochs, cuda_available):
 
         #Adjust the learning rate when the validation loss or accuracy plateaus
         scheduler.step(validation_acc)
+
+        # Save the weights for each epoch
+        torch.save(foxnet.state_dict(), "model_weights/epoch_{num}_model_weights".format(num=epoch))
 
 
 def evaluate_foxnet(foxnet, cuda_available):
@@ -458,7 +470,8 @@ if __name__ == '__main__':
     parameters = load_parameters("parameters.ini")
 
     # fox = FoxNet()
-    fox = WideResNet(depth=40, num_classes=100, widen_factor=4, dropRate=0)
+    fox = WideResNet(depth=40, num_classes=100, widen_factor=4, dropRate=0.3)
+    # fox = WideResNet(depth=16, num_classes=100, widen_factor=4, dropRate=0.3)
 
     # If loading
     # fox.load_state_dict(torch.load("current_best_model_weights"))
@@ -469,11 +482,7 @@ if __name__ == '__main__':
         print("Using CUDA")
         fox.cuda()
 
-    start = time.time()
     epochs = 250
 
     train_fox(fox, epochs, use_cuda)
     # evaluate_foxnet(fox, use_cuda)
-
-    end = time.time()
-    print(end-start, "seconds")
