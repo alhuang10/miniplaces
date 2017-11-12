@@ -48,8 +48,9 @@ def load_parameters(parameters_filepath):
 class ColorAugmentation(object):
     """Performs color channel augmentation on the images"""
 
-    def __init__(self):
+    def __init__(self, image_size):
 
+        self.image_size = image_size
         self.eigenvalues = np.matrix([.19678, .01644, .00278])
 
         self.eig_vec_one = np.matrix('-.5559; -.5809; -.5945')
@@ -73,7 +74,7 @@ class ColorAugmentation(object):
         # Tile the addition so we can add it to the image
         addition = torch.Tensor(addition)
         addition = addition.view(3, 1, 1)
-        addition = addition.repeat(1, 128, 128)
+        addition = addition.repeat(1, self.image_size, self.image_size)
 
         modified_image = image + addition
         return modified_image
@@ -201,6 +202,9 @@ def find_top_5_error(true_labels, predictions):
 
 def train_fox(foxnet, epochs, cuda_available):
 
+    training_batch_size = 16
+    validation_batch_size = 1
+
     channel_mean = torch.Tensor([.4543, .4362, .4047])
     # channel_std = torch.Tensor([.2274, .2244, .2336])
     channel_std = torch.ones(3)
@@ -210,7 +214,7 @@ def train_fox(foxnet, epochs, cuda_available):
         RandomHorizontalFlip(),
         ToTensor(),
         Normalize(channel_mean, channel_std),
-        ColorAugmentation()
+        ColorAugmentation(112)
     ])
 
     val_data_transform = Compose([
@@ -220,22 +224,30 @@ def train_fox(foxnet, epochs, cuda_available):
     ])
 
     criterion = nn.CrossEntropyLoss()
-    optimizer = optim.SGD(foxnet.parameters(), lr=0.01, momentum=0.9)
+    optimizer = optim.SGD(foxnet.parameters(), lr=0.01, momentum=0.9, weight_decay=0.0001)
 
     # optimizer = optim.Adam(foxnet.parameters(), lr=0.1, betas=(0.9, 0.999), eps=1e-08, weight_decay=0)
 
-    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='max', factor=0.25, verbose=True)
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='max', factor=0.25, verbose=True, patience=5)
 
+    # 32 with FoxNet
     trainset = Places("data/images/", "ground_truth/train.txt", transform=train_data_transform)
-    trainloader = torch.utils.data.DataLoader(trainset, batch_size=32,
+    trainloader = torch.utils.data.DataLoader(trainset, batch_size=training_batch_size,
                                               shuffle=True, num_workers=4)
 
+    # 10 with FoxNet
     valset = Places("data/images/", "ground_truth/val.txt", transform=val_data_transform)
-    valloader = torch.utils.data.DataLoader(valset, batch_size=10,
+    valloader = torch.utils.data.DataLoader(valset, batch_size=validation_batch_size,
                                             shuffle=False, num_workers=8)
+
+    valtrainset = Places("data/images/", "ground_truth/val.txt", transform=train_data_transform)
+    valtrainloader = torch.utils.data.DataLoader(valtrainset, batch_size=32,
+                                                 shuffle=True, num_workers=4)
 
     best_validation_acc = 0
     best_model_wts = None
+
+    print("Beginning Training")
 
     for epoch in range(epochs):
 
@@ -246,8 +258,12 @@ def train_fox(foxnet, epochs, cuda_available):
 
 
         # Set model weights to be trainable during training
+        # Start of training code
         foxnet.train(True)
         for i, data in enumerate(trainloader, 0):
+
+            if i % 10 == 0:
+                print("Training:", i)
 
             input_images, labels = data
 
@@ -279,6 +295,31 @@ def train_fox(foxnet, epochs, cuda_available):
 
         training_acc = train_top5_right / (train_top5_right+train_top5_wrong)
         print("Epoch {e}: Training Accuracy: {acc}".format(e=epoch + 1, acc=training_acc))
+        # End of training code
+
+
+        # Start of training on the validation set
+        # for i, data in enumerate(valtrainloader, 0):
+        #
+        #     input_images, labels = data
+        #
+        #     if cuda_available:
+        #         input_images, labels = Variable(input_images.cuda()), Variable(labels.cuda())
+        #     else:
+        #         input_images, labels = Variable(input_images), Variable(labels)
+        #
+        #     optimizer.zero_grad()
+        #
+        #     outputs = foxnet(input_images)
+        #     loss = criterion(outputs, labels)
+        #     loss.backward()
+        #
+        #     running_loss += loss.data[0]
+        #     optimizer.step()
+        # End of training validation set
+
+
+
 
         # Set model weights to be untrainable during validation
         # foxnet.train(False)
@@ -293,6 +334,9 @@ def train_fox(foxnet, epochs, cuda_available):
         # Takes about 2 minutes to run, kind of slow
         for i, val_data in enumerate(valloader):
 
+            if i % 10 == 0:
+                print("Validation:", i)
+
             # Send all the 10 crops through in a batch
 
             input_images, labels = val_data
@@ -302,7 +346,7 @@ def train_fox(foxnet, epochs, cuda_available):
             # input_images = torch.squeeze(input_images)
 
             # Multiple val batch
-            input_images = input_images.view(100, 3, 112, 112)  # First dimension is batch_size * 10
+            input_images = input_images.view(validation_batch_size*10, 3, 112, 112)  # First dimension is batch_size * 10
 
             if cuda_available:
                 input_images, labels = Variable(input_images.cuda()), Variable(labels.cuda())
@@ -317,7 +361,7 @@ def train_fox(foxnet, epochs, cuda_available):
             # loss = criterion(combined_output_for_loss, labels)
 
             # Multiple val batch
-            output = output.view(10, 10, 100)  # Each index into first dimension is a single one of the 10 predictions
+            output = output.view(validation_batch_size, 10, 100)  # Each index into first dimension is a single one of the 10 predictions
             combined_output = torch.sum(output, dim=1)  # Average the 10 predictions
 
             loss = criterion(combined_output, labels)
@@ -413,8 +457,8 @@ if __name__ == '__main__':
 
     parameters = load_parameters("parameters.ini")
 
-    fox = FoxNet()
-    # fox = WideResNet(depth=40, num_classes=100, widen_factor=4, dropRate=0)
+    # fox = FoxNet()
+    fox = WideResNet(depth=40, num_classes=100, widen_factor=4, dropRate=0)
 
     # If loading
     # fox.load_state_dict(torch.load("current_best_model_weights"))

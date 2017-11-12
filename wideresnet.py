@@ -4,6 +4,7 @@ import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import ipdb
 
 
 class BasicBlock(nn.Module):
@@ -55,6 +56,8 @@ class WideResNet(nn.Module):
         super(WideResNet, self).__init__()
         nChannels = [16, 16*widen_factor, 32*widen_factor, 64*widen_factor]
 
+        # Each block has 2 layers?, 3 Network blocks with 2*n layers so need to divide by 6
+        # 3 layers in self.conv1, then layer at the end
         assert((depth - 4) % 6 == 0)
         n = int((depth - 4) / 6)
 
@@ -86,11 +89,12 @@ class WideResNet(nn.Module):
                 m.bias.data.zero_()
 
     def forward(self, x):
+
         out = self.conv1(x)
         out = self.block1(out)
         out = self.block2(out)
         out = self.block3(out)
         out = self.relu(self.bn1(out))
-        out = F.avg_pool2d(out, 8)
+        out = F.avg_pool2d(out, 28)  # changed from 8 because we are left with 28 by 28 images
         out = out.view(-1, self.nChannels)
         return self.fc(out)
