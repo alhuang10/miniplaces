@@ -54,12 +54,15 @@ class NetworkBlock(nn.Module):
 class WideResNet(nn.Module):
     def __init__(self, depth, num_classes, widen_factor=1, dropRate=0.0):
         super(WideResNet, self).__init__()
-        nChannels = [16, 16*widen_factor, 32*widen_factor, 64*widen_factor]
+        nChannels = [16, 16*widen_factor, 32*widen_factor, 64*widen_factor, 128*widen_factor, 256*widen_factor]
 
         # Each block has 2 layers?, 3 Network blocks with 2*n layers so need to divide by 6
         # 3 layers in self.conv1, then layer at the end
-        assert((depth - 4) % 6 == 0)
-        n = int((depth - 4) / 6)
+        num_blocks = 5
+        layers_per_block = 2
+
+        assert((depth - 4) % (num_blocks*layers_per_block) == 0)
+        n = int((depth - 4) / (num_blocks*layers_per_block))
 
         block = BasicBlock
 
@@ -72,11 +75,21 @@ class WideResNet(nn.Module):
         self.block2 = NetworkBlock(n, nChannels[1], nChannels[2], block, 2, dropRate)
         # 3rd block
         self.block3 = NetworkBlock(n, nChannels[2], nChannels[3], block, 2, dropRate)
+
+        # New Stuff
+        self.block4 = NetworkBlock(n, nChannels[3], nChannels[4], block, 2, dropRate)
+        self.block5 = NetworkBlock(n, nChannels[4], nChannels[5], block, 2, dropRate)
+
         # global average pooling and classifier
-        self.bn1 = nn.BatchNorm2d(nChannels[3])
+        # self.bn1 = nn.BatchNorm2d(nChannels[3])
+        # self.relu = nn.ReLU(inplace=True)
+        # self.fc = nn.Linear(nChannels[3], num_classes)
+        # self.nChannels = nChannels[3]
+
+        self.bn1 = nn.BatchNorm2d(nChannels[5])
         self.relu = nn.ReLU(inplace=True)
-        self.fc = nn.Linear(nChannels[3], num_classes)
-        self.nChannels = nChannels[3]
+        self.fc = nn.Linear(nChannels[5], num_classes)
+        self.nChannels = nChannels[5]
 
         for m in self.modules():
             if isinstance(m, nn.Conv2d):
@@ -90,11 +103,19 @@ class WideResNet(nn.Module):
 
     def forward(self, x):
 
+        # ipdb.set_trace()
+
         out = self.conv1(x)
         out = self.block1(out)
         out = self.block2(out)
         out = self.block3(out)
+
+        # New Stuff
+        out = self.block4(out)
+        out = self.block5(out)
+
         out = self.relu(self.bn1(out))
-        out = F.avg_pool2d(out, 28)  # changed from 8 because we are left with 28 by 28 images
+        out = F.avg_pool2d(out, 7)  # changed from 8 because we are left with 28 by 28 images
+        # Adding two more layers, now to 7
         out = out.view(-1, self.nChannels)
         return self.fc(out)

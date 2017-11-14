@@ -15,35 +15,12 @@ import ipdb
 
 from wideresnet import WideResNet
 
-# TODO
-# 1. figure out to load dataset and use dataloader
-# 2. data augmentation
-# 3. Keep Track/Save the model that has highest  validation set score (somewhere on pytorch tutorials)
-# 4. Learning rate scheduler
-# 5. Image normalization
-
-
 def load_parameters(parameters_filepath):
     conf_parameters = configparser.ConfigParser()
     conf_parameters.read(parameters_filepath, encoding="UTF-8")
     # nested_parameters = utils.convert_configparser_to_dictionary(conf_parameters)
     nested_parameters = {s: dict(conf_parameters.items(s)) for s in conf_parameters.sections()}
     return nested_parameters
-
-# implemented in torchvision already
-# class ToTensor(object):
-#     """Convert ndarrays in sample to Tensors."""
-#
-#     def __call__(self, sample):
-#         image, landmarks = sample['image'], sample['landmarks']
-#
-#         # swap color axis because
-#         # numpy image: H x W x C
-#         # torch image: C X H X W
-#         image = image.transpose((2, 0, 1))
-#         return {'image': torch.from_numpy(image),
-#                 'landmarks': torch.from_numpy(landmarks)}
-
 
 class ColorAugmentation(object):
     """Performs color channel augmentation on the images"""
@@ -203,8 +180,8 @@ def find_top_5_error(true_labels, predictions):
 def train_fox(foxnet, epochs, cuda_available):
 
     # 16 limit for 28 layer - 10 wide network seems like
-    training_batch_size = 32
-    validation_batch_size = 2
+    training_batch_size = 128
+    validation_batch_size = 20
 
     channel_mean = torch.Tensor([.4543, .4362, .4047])
     # channel_std = torch.Tensor([.2274, .2244, .2336])
@@ -300,6 +277,9 @@ def train_fox(foxnet, epochs, cuda_available):
                       (epoch + 1, i + 1, running_loss / 500))
                 running_loss = 0.0
 
+            # Use to test validation back to training switch
+            # break
+
         training_acc = train_top5_right / (train_top5_right+train_top5_wrong)
         training_accuracies.append(training_acc)
         print("Epoch {e}: Training Accuracy: {acc}".format(e=epoch + 1, acc=training_acc))
@@ -389,6 +369,9 @@ def train_fox(foxnet, epochs, cuda_available):
             val_top5_right += num_correct
             val_top5_wrong += num_incorrect
 
+            # Use to test validation back to training switch
+            # break
+
         validation_acc = val_top5_right/(val_top5_right+val_top5_wrong)
         validation_accuracies.append(validation_acc)
         print("Epoch {e}: Validation Accuracy: {acc}".format(e=epoch+1, acc=validation_acc))
@@ -469,8 +452,8 @@ if __name__ == '__main__':
 
     parameters = load_parameters("parameters.ini")
 
-    # fox = FoxNet()
-    fox = WideResNet(depth=40, num_classes=100, widen_factor=4, dropRate=0.3)
+    # fox = FoxNet
+    fox = WideResNet(depth=24, num_classes=100, widen_factor=2, dropRate=0)
     # fox = WideResNet(depth=16, num_classes=100, widen_factor=4, dropRate=0.3)
 
     # If loading
