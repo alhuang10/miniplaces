@@ -7,6 +7,7 @@ import torchvision
 from torchvision.transforms import *
 import numpy as np
 from collections import defaultdict
+from scipy.stats import entropy
 
 import os
 from PIL import Image
@@ -230,6 +231,7 @@ def train_fox(foxnet, epochs, cuda_available):
 
     training_accuracies = []
     validation_accuracies = []
+    entropies = []
 
     validation_softmax = torch.nn.Softmax(dim=2)
 
@@ -245,7 +247,7 @@ def train_fox(foxnet, epochs, cuda_available):
         # Set model weights to be trainable during training
         ### Start of training code
 
-        # foxnet.train(True)
+        foxnet.train(True)
         for i, data in enumerate(trainloader, 0):
 
             if i % 10 == 0:
@@ -315,7 +317,6 @@ def train_fox(foxnet, epochs, cuda_available):
 
         # Set model weights to be untrainable during validation
         foxnet.train(False)
-
         # Calculate validation accuracy after each epoch
         val_top5_right = 0
         val_top5_wrong = 0
@@ -405,8 +406,8 @@ def train_fox(foxnet, epochs, cuda_available):
         # Save the weights for each epoch
         torch.save(foxnet.state_dict(), "model_weights/epoch_{num}_model_weights".format(num=epoch))
 
-        evaluate_foxnet(fox, use_cuda, epoch=epoch, folder="dropout_trial_submission_files/")
-
+        ent = evaluate_foxnet(fox, use_cuda, epoch=epoch, folder="dropout_trial_submission_files/")
+        entropies.append(ent)
 
 def evaluate_foxnet(foxnet, cuda_available, epoch=0, folder="./"):
 
@@ -461,6 +462,8 @@ def evaluate_foxnet(foxnet, cuda_available, epoch=0, folder="./"):
         # Use to test memory
         # break
 
+
+    # Ensuring the test predictions are reasonable by keeping track of counts and doing entropy calc
     x = np.array(predictions)
     x = x.flatten()
 
@@ -468,6 +471,13 @@ def evaluate_foxnet(foxnet, cuda_available, epoch=0, folder="./"):
         counts[num] += 1
 
     print(counts)
+
+    values = list(counts.values())
+    ent = entropy(values)
+    print("Entropy:", ent)
+    # End of counting and entropy
+
+
 
     # Write the output to submission file format
     image_paths = []
@@ -481,6 +491,8 @@ def evaluate_foxnet(foxnet, cuda_available, epoch=0, folder="./"):
 
             f.write(image_path + " " + " ".join(map(str, top_5_prediction)))
             f.write("\n")
+
+    return ent
 
 
 if __name__ == '__main__':
