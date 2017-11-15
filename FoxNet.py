@@ -6,6 +6,7 @@ import torch.optim as optim
 import torchvision
 from torchvision.transforms import *
 import numpy as np
+from collections import defaultdict
 
 import os
 from PIL import Image
@@ -181,7 +182,7 @@ def train_fox(foxnet, epochs, cuda_available):
 
     # 16 limit for 28 layer - 10 wide network seems like
     training_batch_size = 128
-    validation_batch_size = 20
+    validation_batch_size = 10
 
     channel_mean = torch.Tensor([.4543, .4362, .4047])
     # channel_std = torch.Tensor([.2274, .2244, .2336])
@@ -230,6 +231,8 @@ def train_fox(foxnet, epochs, cuda_available):
     training_accuracies = []
     validation_accuracies = []
 
+    validation_softmax = torch.nn.Softmax(dim=2)
+
     for epoch in range(epochs):
 
         running_loss = 0
@@ -241,7 +244,8 @@ def train_fox(foxnet, epochs, cuda_available):
 
         # Set model weights to be trainable during training
         ### Start of training code
-        foxnet.train(True)
+
+        # foxnet.train(True)
         for i, data in enumerate(trainloader, 0):
 
             if i % 10 == 0:
@@ -284,7 +288,8 @@ def train_fox(foxnet, epochs, cuda_available):
         training_accuracies.append(training_acc)
         print("Epoch {e}: Training Accuracy: {acc}".format(e=epoch + 1, acc=training_acc))
         print("Training accuracies so far:", training_accuracies)
-        # End of training code
+
+        ### End of training code
 
 
         ## Start of training on the validation set
@@ -308,10 +313,8 @@ def train_fox(foxnet, epochs, cuda_available):
         ## End of training validation set
 
 
-
-
         # Set model weights to be untrainable during validation
-        # foxnet.train(False)
+        foxnet.train(False)
 
         # Calculate validation accuracy after each epoch
         val_top5_right = 0
@@ -319,12 +322,16 @@ def train_fox(foxnet, epochs, cuda_available):
 
         validation_loss = 0
 
+        current_time = time.time()
+
         # Make prediction for validation set and test set by taking a 10 crop, and taking top 5 from the sum of the 10
         # Takes about 2 minutes to run, kind of slow
         for i, val_data in enumerate(valloader):
 
-            if i % 100 == 0:
-                print("Validation:", i)
+            if i % 50 == 0:
+                time_to_run = time.time() - current_time
+                current_time = time.time()
+                print("Validation:", i, time_to_run)
 
             input_images, labels = val_data
 
@@ -347,8 +354,12 @@ def train_fox(foxnet, epochs, cuda_available):
             # combined_output_for_loss = combined_output.view(1, 100)
             # loss = criterion(combined_output_for_loss, labels)
 
+            # ipdb.set_trace()
+
             # Multiple val batch
             output = output.view(validation_batch_size, 10, 100)  # Each index into first dimension is a single one of the 10 predictions
+            output = validation_softmax(output)
+
             combined_output = torch.sum(output, dim=1)  # Average the 10 predictions
 
             loss = criterion(combined_output, labels)
@@ -357,8 +368,8 @@ def train_fox(foxnet, epochs, cuda_available):
 
             _, top_5_indices = torch.topk(combined_output, 5)
            
-            print(top_5_indices)
-            print(labels)
+            # print(top_5_indices)
+            # print(labels)
 
             # Single image batch method
             # if labels.data[0] in top_5_indices.data:
@@ -388,14 +399,16 @@ def train_fox(foxnet, epochs, cuda_available):
 
             torch.save(best_model_wts, "current_best_model_weights")
 
-        #Adjust the learning rate when the validation loss or accuracy plateaus
+        # Adjust the learning rate when the validation loss or accuracy plateaus
         scheduler.step(validation_acc)
 
         # Save the weights for each epoch
         torch.save(foxnet.state_dict(), "model_weights/epoch_{num}_model_weights".format(num=epoch))
 
+        evaluate_foxnet(fox, use_cuda, epoch=epoch, folder="dropout_trial_submission_files/")
 
-def evaluate_foxnet(foxnet, cuda_available):
+
+def evaluate_foxnet(foxnet, cuda_available, epoch=0, folder="./"):
 
     channel_mean = torch.Tensor([.4543, .4362, .4047])
     # channel_std = torch.Tensor([.2274, .2244, .2336])
@@ -411,16 +424,17 @@ def evaluate_foxnet(foxnet, cuda_available):
     testloader = torch.utils.data.DataLoader(testset, batch_size=1,
                                              shuffle=False, num_workers=8)
 
+    counts = defaultdict(int)
     predictions = []
 
-    softmax = torch.nn.Softmax(dim=0)
+    test_softmax = torch.nn.Softmax(dim=1)
 
     for i, test_data in enumerate(testloader):
 
         # ipdb.set_trace()
 
-        if i % 100 == 0:
-            print(i)
+        if i % 500 == 0:
+            print("Test:", i)
 
         input_images, labels = test_data
 
@@ -433,15 +447,27 @@ def evaluate_foxnet(foxnet, cuda_available):
             input_images = Variable(input_images)
 
         output = foxnet(input_images)
-        output = softmax(output)
+        output = test_softmax(output)
 
         combined_output = torch.sum(output, dim=0)
 
         _, top_5_indices = torch.topk(combined_output, 5)
         
         # print(top_5_indices)
+        # time.sleep(1)
 
         predictions.append(list(top_5_indices.cpu().data.numpy()))
+
+        # Use to test memory
+        # break
+
+    x = np.array(predictions)
+    x = x.flatten()
+
+    for num in x:
+        counts[num] += 1
+
+    print(counts)
 
     # Write the output to submission file format
     image_paths = []
@@ -450,7 +476,7 @@ def evaluate_foxnet(foxnet, cuda_available):
             image_path, _ = line.rstrip().split(" ")
             image_paths.append(image_path)
 
-    with open("submission_file.txt", "w") as f:
+    with open(folder + "submission_file_epoch_{e}.txt".format(e=epoch), "w") as f:
         for image_path, top_5_prediction in zip(image_paths, predictions):
 
             f.write(image_path + " " + " ".join(map(str, top_5_prediction)))
@@ -461,12 +487,14 @@ if __name__ == '__main__':
 
     parameters = load_parameters("parameters.ini")
 
-    # fox = FoxNet
-    fox = WideResNet(depth=24, num_classes=100, widen_factor=2, dropRate=0)
+    # fox = FoxNet()
+    # fox = WideResNet(depth=24, num_classes=100, widen_factor=2, dropRate=0)
+    fox = WideResNet(depth=24, num_classes=100, widen_factor=2, dropRate=0.3)
     # fox = WideResNet(depth=16, num_classes=100, widen_factor=4, dropRate=0.3)
 
     # If loading
-    fox.load_state_dict(torch.load("model_weights/epoch_24_model_weights"))
+    # fox.load_state_dict(torch.load("past_model_weights/removed_vertical_flip_lr_scheduling_33"))
+    # fox.load_state_dict(torch.load("model_weights/epoch_15_model_weights"))
 
     use_cuda = torch.cuda.is_available()
 
