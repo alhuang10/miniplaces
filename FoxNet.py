@@ -284,10 +284,10 @@ def train_fox(foxnet, epochs, cuda_available):
         training_accuracies.append(training_acc)
         print("Epoch {e}: Training Accuracy: {acc}".format(e=epoch + 1, acc=training_acc))
         print("Training accuracies so far:", training_accuracies)
-        ## End of training code
+        # End of training code
 
 
-        ### Start of training on the validation set
+        ## Start of training on the validation set
         # for i, data in enumerate(valtrainloader, 0):
         #
         #     input_images, labels = data
@@ -305,7 +305,7 @@ def train_fox(foxnet, epochs, cuda_available):
         #
         #     running_loss += loss.data[0]
         #     optimizer.step()
-        ### End of training validation set
+        ## End of training validation set
 
 
 
@@ -356,6 +356,9 @@ def train_fox(foxnet, epochs, cuda_available):
             validation_loss += loss.data[0]
 
             _, top_5_indices = torch.topk(combined_output, 5)
+           
+            print(top_5_indices)
+            print(labels)
 
             # Single image batch method
             # if labels.data[0] in top_5_indices.data:
@@ -410,6 +413,8 @@ def evaluate_foxnet(foxnet, cuda_available):
 
     predictions = []
 
+    softmax = torch.nn.Softmax(dim=0)
+
     for i, test_data in enumerate(testloader):
 
         # ipdb.set_trace()
@@ -428,9 +433,13 @@ def evaluate_foxnet(foxnet, cuda_available):
             input_images = Variable(input_images)
 
         output = foxnet(input_images)
+        output = softmax(output)
+
         combined_output = torch.sum(output, dim=0)
 
         _, top_5_indices = torch.topk(combined_output, 5)
+        
+        # print(top_5_indices)
 
         predictions.append(list(top_5_indices.cpu().data.numpy()))
 
@@ -457,7 +466,7 @@ if __name__ == '__main__':
     # fox = WideResNet(depth=16, num_classes=100, widen_factor=4, dropRate=0.3)
 
     # If loading
-    # fox.load_state_dict(torch.load("current_best_model_weights"))
+    fox.load_state_dict(torch.load("model_weights/epoch_24_model_weights"))
 
     use_cuda = torch.cuda.is_available()
 
