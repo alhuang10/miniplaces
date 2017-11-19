@@ -404,12 +404,16 @@ def train_fox(foxnet, epochs, cuda_available):
         scheduler.step(validation_acc)
 
         # Save the weights for each epoch
-        torch.save(foxnet.state_dict(), "model_weights/epoch_{num}_model_weights".format(num=epoch))
+        torch.save(foxnet.state_dict(), "model_weights/epoch_{num}_model_weights".format(num=epoch+1))
 
         ent = evaluate_foxnet(fox, use_cuda, epoch=epoch, folder="dropout_trial_submission_files/")
         entropies.append(ent)
+        print("Entropies:", entropies)
 
 def evaluate_foxnet(foxnet, cuda_available, epoch=0, folder="./"):
+
+    # Disable dropout at eval time
+    foxnet.train(False)
 
     channel_mean = torch.Tensor([.4543, .4362, .4047])
     # channel_std = torch.Tensor([.2274, .2244, .2336])
@@ -495,26 +499,123 @@ def evaluate_foxnet(foxnet, cuda_available, epoch=0, folder="./"):
     return ent
 
 
+def ensemble(folder="./"):
+
+    fox_14_2 = WideResNet(depth=14, num_classes=100, widen_factor=2, dropRate=0.3)
+    fox_24_2 = WideResNet(depth=24, num_classes=100, widen_factor=2, dropRate=0.3)
+    fox_34_3 = WideResNet(depth=34, num_classes=100, widen_factor=3, dropRate=0.4)
+
+    fox_14_2.load_state_dict(torch.load("21_4_top_5_error_weights_14_by_2"))
+    fox_24_2.load_state_dict(torch.load("19_top_5_error_weights_24_by_2"))
+    fox_34_3.load_state_dict(torch.load("17_5_top_5_error_weights_34_by_3"))
+
+    fox_list = [fox_14_2, fox_24_2, fox_34_3]
+
+    for fox_net in fox_list:
+        fox_net.cuda()
+        fox_net.train(False)
+
+    channel_mean = torch.Tensor([.4543, .4362, .4047])
+    # channel_std = torch.Tensor([.2274, .2244, .2336])
+    channel_std = torch.ones(3)
+
+    test_data_transform = Compose([
+        TenCrop(112),
+        Lambda(lambda crops: torch.stack([ToTensor()(crop) for crop in crops])),
+        Lambda(lambda crops: torch.stack([Normalize(channel_mean, channel_std)(crop) for crop in crops]))
+    ])
+
+    testset = Places("data/images/", "ground_truth/test.txt", transform=test_data_transform)
+    testloader = torch.utils.data.DataLoader(testset, batch_size=1,
+                                             shuffle=False, num_workers=8)
+
+    counts = defaultdict(int)
+    predictions = []
+
+    test_softmax = torch.nn.Softmax(dim=1)
+
+    current_time = time.time()
+
+    for i, test_data in enumerate(testloader):
+
+        # ipdb.set_trace()
+
+        print(i)
+
+        if i % 500 == 0:
+            time_to_run = time.time() - current_time
+            current_time = time.time()
+            print("Test:", i, time_to_run)
+
+        input_images, labels = test_data
+
+        # Remove the redundant batch_size dimension
+        input_images = torch.squeeze(input_images)
+        input_images = Variable(input_images.cuda())
+
+        output_sum = torch.zeros(100)
+
+        for fox in fox_list:
+            output = fox(input_images)
+            output = test_softmax(output)
+
+            combined_output = torch.sum(output, dim=0)
+            output_sum = output_sum + combined_output.cpu().data
+
+        _, top_5_indices = torch.topk(combined_output, 5)
+
+        predictions.append(list(top_5_indices.cpu().data.numpy()))
+
+    # Ensuring the test predictions are reasonable by keeping track of counts and doing entropy calc
+    x = np.array(predictions)
+    x = x.flatten()
+
+    for num in x:
+        counts[num] += 1
+
+    print(counts)
+
+    values = list(counts.values())
+    ent = entropy(values)
+    print("Entropy:", ent)
+    # End of counting and entropy
+
+    # Write the output to submission file format
+    image_paths = []
+    with open("ground_truth/test.txt", "r") as f:
+        for line in f:
+            image_path, _ = line.rstrip().split(" ")
+            image_paths.append(image_path)
+
+    with open(folder + "submission_file_ensemble.txt", "w") as f:
+        for image_path, top_5_prediction in zip(image_paths, predictions):
+            f.write(image_path + " " + " ".join(map(str, top_5_prediction)))
+            f.write("\n")
+
+    return ent
+
 if __name__ == '__main__':
 
-    parameters = load_parameters("parameters.ini")
+    ensemble()
 
-    # fox = FoxNet()
-    # fox = WideResNet(depth=24, num_classes=100, widen_factor=2, dropRate=0)
-    fox = WideResNet(depth=24, num_classes=100, widen_factor=2, dropRate=0.3)
-    # fox = WideResNet(depth=16, num_classes=100, widen_factor=4, dropRate=0.3)
-
-    # If loading
-    # fox.load_state_dict(torch.load("past_model_weights/removed_vertical_flip_lr_scheduling_33"))
-    # fox.load_state_dict(torch.load("model_weights/epoch_15_model_weights"))
-
-    use_cuda = torch.cuda.is_available()
-
-    if use_cuda:
-        print("Using CUDA")
-        fox.cuda()
-
-    epochs = 250
-
-    train_fox(fox, epochs, use_cuda)
-    # evaluate_foxnet(fox, use_cuda)
+    # parameters = load_parameters("parameters.ini")
+    #
+    # # fox = FoxNet()
+    # # fox = WideResNet(depth=24, num_classes=100, widen_factor=2, dropRate=0)
+    # fox = WideResNet(depth=24, num_classes=100, widen_factor=2, dropRate=0.3)
+    # # fox = WideResNet(depth=16, num_classes=100, widen_factor=4, dropRate=0.3)
+    #
+    # # If loading
+    # # fox.load_state_dict(torch.load("past_model_weights/removed_vertical_flip_lr_scheduling_33"))
+    # # fox.load_state_dict(torch.load("model_weights/epoch_15_model_weights"))
+    #
+    # use_cuda = torch.cuda.is_available()
+    #
+    # if use_cuda:
+    #     print("Using CUDA")
+    #     fox.cuda()
+    #
+    # epochs = 250
+    #
+    # train_fox(fox, epochs, use_cuda)
+    # # evaluate_foxnet(fox, use_cuda)
